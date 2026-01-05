@@ -8,9 +8,10 @@
   (purpose "Generate type-safe ReScript API clients from OpenAPI specifications")
 
   (position-in-ecosystem
-    (layer "tooling")
+    (layer "network-api")
     (category "code-generation")
-    (role "Bridges OpenAPI ecosystem to ReScript"))
+    (role "Bridges OpenAPI ecosystem to ReScript")
+    (hub "github.com/hyperpolymath/rescript-full-stack"))
 
   (related-projects
     (sibling-standard
