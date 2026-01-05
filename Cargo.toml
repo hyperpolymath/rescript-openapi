@@ -5,7 +5,9 @@
 name = "rescript-openapi"
 version = "0.1.0"
 edition = "2021"
+authors = ["Hyperpolymath <hello@hyperpolymath.com>"]
 description = "Generate type-safe ReScript clients from OpenAPI specifications"
+readme = "README.adoc"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/hyperpolymath/rescript-openapi"
 keywords = ["rescript", "openapi", "codegen", "api", "client"]
