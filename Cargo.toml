@@ -31,6 +31,7 @@ anyhow = "1"
 
 # File system
 walkdir = "2"
+notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
 
 [dev-dependencies]
 insta = { version = "1", features = ["redactions"] }

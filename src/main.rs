@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2025 Hyperpolymath
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
+use std::sync::mpsc::channel;
+use std::time::Duration;
 
 use rescript_openapi::{codegen, ir, parser};
 
+/// Command-line interface for rescript-openapi
 #[derive(Parser)]
 #[command(name = "rescript-openapi")]
 #[command(about = "Generate type-safe ReScript clients from OpenAPI specifications")]
@@ -39,6 +43,14 @@ enum Commands {
         /// Generate HTTP client functions
         #[arg(long, default_value = "true")]
         with_client: bool,
+
+        /// Watch input file for changes and regenerate automatically
+        #[arg(short, long)]
+        watch: bool,
+
+        /// Print generated code to stdout instead of writing to files
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Validate an OpenAPI specification
@@ -56,6 +68,183 @@ enum Commands {
     },
 }
 
+/// Represents the generated code output for dry-run mode
+struct GeneratedCode {
+    /// Name of the file that would be created
+    filename: String,
+    /// Generated code content
+    content: String,
+}
+
+/// Generate code and return as a vector of GeneratedCode structs
+fn generate_code(
+    input_path: &PathBuf,
+    config: &codegen::Config,
+) -> Result<Vec<GeneratedCode>> {
+    let spec = parser::parse_spec(input_path)
+        .with_context(|| format!("Failed to parse OpenAPI spec: {:?}", input_path))?;
+    let api_spec = ir::lower(&spec)
+        .context("Failed to lower OpenAPI spec to IR")?;
+
+    let mut generated_files = Vec::new();
+
+    // Generate Types.res - all type definitions
+    let types_code = codegen::types::generate(&api_spec, config)
+        .context("Failed to generate types")?;
+    generated_files.push(GeneratedCode {
+        filename: format!("{}Types.res", config.module_prefix),
+        content: types_code,
+    });
+
+    // Generate Schema.res - rescript-schema validators
+    if config.generate_schema {
+        let schema_code = codegen::schema::generate(&api_spec, config)
+            .context("Failed to generate schema")?;
+        generated_files.push(GeneratedCode {
+            filename: format!("{}Schema.res", config.module_prefix),
+            content: schema_code,
+        });
+    }
+
+    // Generate Client.res - HTTP client functions
+    if config.generate_client {
+        let client_code = codegen::client::generate(&api_spec, config)
+            .context("Failed to generate client")?;
+        generated_files.push(GeneratedCode {
+            filename: format!("{}Client.res", config.module_prefix),
+            content: client_code,
+        });
+    }
+
+    Ok(generated_files)
+}
+
+/// Write generated code to files in the output directory
+fn write_generated_code(config: &codegen::Config, generated_files: &[GeneratedCode]) -> Result<()> {
+    std::fs::create_dir_all(&config.output_dir)
+        .with_context(|| format!("Failed to create output directory: {:?}", config.output_dir))?;
+
+    for generated_file in generated_files {
+        let file_path = config.output_dir.join(&generated_file.filename);
+        std::fs::write(&file_path, &generated_file.content)
+            .with_context(|| format!("Failed to write file: {:?}", file_path))?;
+    }
+
+    Ok(())
+}
+
+/// Print generated code to stdout (dry-run mode)
+fn print_generated_code(generated_files: &[GeneratedCode]) {
+    for (index, generated_file) in generated_files.iter().enumerate() {
+        if index > 0 {
+            println!("\n{}", "=".repeat(80));
+        }
+        println!("// FILE: {}", generated_file.filename);
+        println!("{}", "=".repeat(80));
+        println!("{}", generated_file.content);
+    }
+}
+
+/// Run the generate command once
+fn run_generate(
+    input_path: &PathBuf,
+    config: &codegen::Config,
+    dry_run_mode: bool,
+) -> Result<()> {
+    let generated_files = generate_code(input_path, config)?;
+
+    if dry_run_mode {
+        print_generated_code(&generated_files);
+    } else {
+        write_generated_code(config, &generated_files)?;
+        println!(
+            "Generated ReScript code in {:?}",
+            config.output_dir
+        );
+    }
+
+    Ok(())
+}
+
+/// Watch the input file for changes and regenerate on modification
+fn watch_and_regenerate(
+    input_path: &PathBuf,
+    config: &codegen::Config,
+    dry_run_mode: bool,
+) -> Result<()> {
+    // Perform initial generation
+    println!("Watching {:?} for changes...", input_path);
+    if let Err(error) = run_generate(input_path, config, dry_run_mode) {
+        eprintln!("Error during initial generation: {}", error);
+    }
+
+    // Set up file watcher
+    let (sender, receiver) = channel();
+
+    let notify_config = NotifyConfig::default()
+        .with_poll_interval(Duration::from_secs(1));
+
+    let mut watcher: RecommendedWatcher = Watcher::new(sender, notify_config)
+        .context("Failed to create file watcher")?;
+
+    // Watch the input file's parent directory to catch file replacements
+    let watch_path = input_path
+        .parent()
+        .unwrap_or(input_path.as_path());
+
+    watcher
+        .watch(watch_path, RecursiveMode::NonRecursive)
+        .with_context(|| format!("Failed to watch path: {:?}", watch_path))?;
+
+    println!("Press Ctrl+C to stop watching.\n");
+
+    // Event loop for file changes
+    loop {
+        match receiver.recv() {
+            Ok(event_result) => {
+                match event_result {
+                    Ok(event) => {
+                        // Check if the event is for our input file
+                        let is_our_file = event.paths.iter().any(|path| {
+                            path.file_name() == input_path.file_name()
+                        });
+
+                        if is_our_file {
+                            // Filter for modification events
+                            use notify::EventKind;
+                            match event.kind {
+                                EventKind::Modify(_) | EventKind::Create(_) => {
+                                    println!("\nFile changed, regenerating...");
+                                    match run_generate(input_path, config, dry_run_mode) {
+                                        Ok(()) => {
+                                            if !dry_run_mode {
+                                                println!("Regeneration complete.");
+                                            }
+                                        }
+                                        Err(error) => {
+                                            eprintln!("Error during regeneration: {}", error);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("Watch error: {}", error);
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("Channel receive error: {}", error);
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -66,6 +255,8 @@ fn main() -> Result<()> {
             module,
             with_schema,
             with_client,
+            watch,
+            dry_run,
         } => {
             let config = codegen::Config {
                 output_dir: output,
@@ -74,11 +265,11 @@ fn main() -> Result<()> {
                 generate_client: with_client,
             };
 
-            let spec = parser::parse_spec(&input)?;
-            let ir = ir::lower(&spec)?;
-            codegen::generate(&ir, &config)?;
-
-            println!("✓ Generated ReScript code in {:?}", config.output_dir);
+            if watch {
+                watch_and_regenerate(&input, &config, dry_run)?;
+            } else {
+                run_generate(&input, &config, dry_run)?;
+            }
         }
 
         Commands::Validate { input } => {
@@ -86,10 +277,10 @@ fn main() -> Result<()> {
             let diagnostics = parser::validate(&spec);
 
             if diagnostics.is_empty() {
-                println!("✓ OpenAPI spec is valid");
+                println!("OpenAPI spec is valid");
             } else {
-                for d in &diagnostics {
-                    eprintln!("⚠ {}", d);
+                for diagnostic in &diagnostics {
+                    eprintln!("{}", diagnostic);
                 }
                 std::process::exit(1);
             }
@@ -99,15 +290,15 @@ fn main() -> Result<()> {
             let spec = parser::parse_spec(&input)?;
             println!("Title: {}", spec.info.title);
             println!("Version: {}", spec.info.version);
-            if let Some(desc) = &spec.info.description {
-                println!("Description: {}", desc);
+            if let Some(description) = &spec.info.description {
+                println!("Description: {}", description);
             }
             println!("Paths: {}", spec.paths.paths.len());
 
             let schema_count = spec
                 .components
                 .as_ref()
-                .map(|c| c.schemas.len())
+                .map(|components| components.schemas.len())
                 .unwrap_or(0);
             println!("Schemas: {}", schema_count);
         }

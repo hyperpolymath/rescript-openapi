@@ -41,3 +41,21 @@ fn test_petstore_client() {
     let (_, _, client) = generate_from_spec("tests/fixtures/petstore.yaml");
     insta::assert_snapshot!("petstore_client", client);
 }
+
+#[test]
+fn test_complex_types() {
+    let (types, _, _) = generate_from_spec("tests/fixtures/complex.yaml");
+    insta::assert_snapshot!("complex_types", types);
+}
+
+#[test]
+fn test_complex_schema() {
+    let (_, schema, _) = generate_from_spec("tests/fixtures/complex.yaml");
+    insta::assert_snapshot!("complex_schema", schema);
+}
+
+#[test]
+fn test_complex_client() {
+    let (_, _, client) = generate_from_spec("tests/fixtures/complex.yaml");
+    insta::assert_snapshot!("complex_client", client);
+}

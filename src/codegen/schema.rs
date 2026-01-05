@@ -237,7 +237,7 @@ fn generate_schema(type_def: &TypeDef) -> String {
 
             // String enum variant - use S.union with literals
             if cases.iter().all(|c| c.payload.is_none()) {
-                output.push_str(&format!("let {} = S.union([\n", schema_name));
+                output.push_str(&format!("let {}: S.t<{}> = S.union([\n", schema_name, type_name));
 
                 for case in cases {
                     output.push_str(&format!(
@@ -248,22 +248,23 @@ fn generate_schema(type_def: &TypeDef) -> String {
 
                 output.push_str("])\n");
             } else {
-                // Tagged union - use discriminated union pattern
+                // oneOf/anyOf variant - wrap each referenced type's schema
                 output.push_str(&format!("let {}: S.t<{}> = S.union([\n", schema_name, type_name));
 
                 for case in cases {
                     match &case.payload {
                         Some(ty) => {
+                            // Wrap the inner schema to transform to variant constructor
                             output.push_str(&format!(
-                                "  S.object(s => #{{\n    \"type\": s.field(\"type\", S.literal(\"{}\")),\n    \"value\": s.field(\"value\", {})\n  }})->S.transform(s => {{\n    parser: obj => #{}(obj[\"value\"]),\n    serializer: v => switch v {{ | #{}(x) => {{\"type\": \"{}\", \"value\": x}} | _ => S.fail(\"Invalid variant\") }}\n  }}),\n",
-                                case.name.to_lower_camel_case(),
+                                "  {}->S.transform(s => {{\n    parser: v => {}(v),\n    serializer: v => switch v {{ | {}(x) => x | _ => S.fail(\"Expected {}\") }}\n  }}),\n",
                                 ty.to_schema(),
                                 case.name,
                                 case.name,
-                                case.name.to_lower_camel_case()
+                                case.name
                             ));
                         }
                         None => {
+                            // No payload - literal variant
                             output.push_str(&format!(
                                 "  S.literal(\"{}\")->S.transform(s => {{\n    parser: _ => #{},\n    serializer: _ => \"{}\"\n  }}),\n",
                                 case.name.to_lower_camel_case(),
@@ -275,6 +276,27 @@ fn generate_schema(type_def: &TypeDef) -> String {
                 }
 
                 output.push_str("])\n");
+            }
+
+            // Add parse/serialize helpers for variants with payloads
+            if cases.iter().any(|c| c.payload.is_some()) {
+                output.push('\n');
+                output.push_str(&format!(
+                    "let parse{} = (json: Js.Json.t): {} => {{\n",
+                    name,
+                    type_name
+                ));
+                output.push_str(&format!("  S.parseJsonOrThrow(json, {})\n", schema_name));
+                output.push_str("}\n");
+
+                output.push('\n');
+                output.push_str(&format!(
+                    "let serialize{} = (value: {}): Js.Json.t => {{\n",
+                    name,
+                    type_name
+                ));
+                output.push_str(&format!("  S.reverseConvertToJsonOrThrow(value, {})\n", schema_name));
+                output.push_str("}\n");
             }
         }
 

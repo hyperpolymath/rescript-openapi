@@ -65,25 +65,34 @@ fn generate_type(type_def: &TypeDef) -> String {
             }
 
             let type_name = name.to_lower_camel_case();
+            let has_payloads = cases.iter().any(|c| c.payload.is_some());
 
-            // Generate as polymorphic variant for better JSON interop
-            output.push_str(&format!("type {} = [\n", type_name));
+            if has_payloads {
+                // oneOf/anyOf with payloads - generate regular variant type
+                // type pet = Cat(cat) | Dog(dog)
+                output.push_str(&format!("type {} =\n", type_name));
 
-            for case in cases {
-                match &case.payload {
-                    Some(ty) => {
-                        output.push_str(&format!("  | #{}({})\n", case.name, ty.to_rescript()));
-                    }
-                    None => {
-                        output.push_str(&format!("  | #{}\n", case.name));
+                for case in cases {
+                    match &case.payload {
+                        Some(ty) => {
+                            output.push_str(&format!("  | {}({})\n", case.name, ty.to_rescript()));
+                        }
+                        None => {
+                            output.push_str(&format!("  | {}\n", case.name));
+                        }
                     }
                 }
-            }
+            } else {
+                // String enum - generate as polymorphic variant for better JSON interop
+                output.push_str(&format!("type {} = [\n", type_name));
 
-            output.push_str("]\n");
+                for case in cases {
+                    output.push_str(&format!("  | #{}\n", case.name));
+                }
 
-            // Also generate string conversion helpers for string enums
-            if cases.iter().all(|c| c.payload.is_none()) {
+                output.push_str("]\n");
+
+                // Generate string conversion helpers for string enums
                 output.push('\n');
                 output.push_str(&format!(
                     "let {}ToString = (v: {}) => switch v {{\n",

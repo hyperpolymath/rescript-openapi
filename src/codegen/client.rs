@@ -84,15 +84,67 @@ module FetchClient: HttpClient = {
   }
 }
 
+/** Authentication configuration */
+type authConfig =
+  | NoAuth
+  | BearerToken(string)
+  | ApiKey({key: string, headerName: string})
+
 /** Client configuration */
 type config = {
   baseUrl: string,
   headers: Dict.t<string>,
+  auth: authConfig,
 }
 
-let makeConfig = (~baseUrl: string, ~headers=Dict.make(), ()): config => {
-  baseUrl,
-  headers,
+/** Create client configuration with optional authentication
+ *
+ * Bearer token auth:
+ * ```rescript
+ * let config = makeConfig(
+ *   ~baseUrl="https://api.example.com",
+ *   ~bearerToken="my-jwt-token",
+ *   ()
+ * )
+ * ```
+ *
+ * API key auth:
+ * ```rescript
+ * let config = makeConfig(
+ *   ~baseUrl="https://api.example.com",
+ *   ~apiKey="my-api-key",
+ *   ~apiKeyHeader="X-API-Key",
+ *   ()
+ * )
+ * ```
+ */
+let makeConfig = (
+  ~baseUrl: string,
+  ~headers=Dict.make(),
+  ~bearerToken: option<string>=?,
+  ~apiKey: option<string>=?,
+  ~apiKeyHeader: string="X-API-Key",
+  ()
+): config => {
+  let auth = switch (bearerToken, apiKey) {
+  | (Some(token), _) => BearerToken(token)
+  | (_, Some(key)) => ApiKey({key, headerName: apiKeyHeader})
+  | (None, None) => NoAuth
+  }
+  {
+    baseUrl,
+    headers,
+    auth,
+  }
+}
+
+/** Apply authentication headers to a headers dict */
+let applyAuth = (headers: Dict.t<string>, auth: authConfig): unit => {
+  switch auth {
+  | NoAuth => ()
+  | BearerToken(token) => headers->Dict.set("Authorization", `Bearer ${token}`)
+  | ApiKey({key, headerName}) => headers->Dict.set(headerName, key)
+  }
 }
 
 /** Build URL with query parameters */
@@ -226,9 +278,10 @@ fn generate_endpoint(endpoint: &Endpoint, _config: &Config) -> String {
         }
     }
 
-    // Build headers dict
+    // Build headers dict and apply authentication
     output.push_str("    let headers = Dict.fromArray(config.headers->Dict.toArray)\n");
     output.push_str("    headers->Dict.set(\"Content-Type\", \"application/json\")\n");
+    output.push_str("    applyAuth(headers, config.auth)\n");
 
     for p in &header_params {
         if p.required {

@@ -351,18 +351,16 @@ impl<'a> Lowerer<'a> {
             }
 
             SchemaKind::OneOf { one_of } => {
-                let cases = one_of
-                    .iter()
-                    .enumerate()
-                    .map(|(i, schema)| {
-                        let ty = self.schema_to_type(schema).ok();
-                        VariantCase {
-                            name: format!("Case{}", i + 1),
-                            payload: ty,
-                        }
-                    })
-                    .collect();
+                let cases = self.lower_variant_cases(one_of);
+                Ok(TypeDef::Variant {
+                    name: rs_name,
+                    doc,
+                    cases,
+                })
+            }
 
+            SchemaKind::AnyOf { any_of } => {
+                let cases = self.lower_variant_cases(any_of);
                 Ok(TypeDef::Variant {
                     name: rs_name,
                     doc,
@@ -404,6 +402,53 @@ impl<'a> Lowerer<'a> {
             }
             ReferenceOr::Item(schema) => self.schema_kind_to_type(&schema.schema_kind),
         }
+    }
+
+    /// Lower oneOf/anyOf schemas into variant cases
+    ///
+    /// Extracts meaningful names from $ref references (e.g., Cat from #/components/schemas/Cat)
+    /// and falls back to Case1, Case2, etc. for inline schemas.
+    fn lower_variant_cases(&self, schemas: &[ReferenceOr<Schema>]) -> Vec<VariantCase> {
+        let mut cases = Vec::new();
+        let mut fallback_index = 1;
+
+        for schema in schemas {
+            let (case_name, payload) = match schema {
+                ReferenceOr::Reference { reference } => {
+                    // Extract type name from $ref (e.g., #/components/schemas/Cat -> Cat)
+                    let ref_name = reference
+                        .strip_prefix("#/components/schemas/")
+                        .unwrap_or(reference);
+                    let name = ref_name.to_pascal_case();
+                    let ty = RsType::Named(name.clone());
+                    (name, Some(ty))
+                }
+                ReferenceOr::Item(inline_schema) => {
+                    // For inline schemas, try to get a meaningful name from the title
+                    // or fall back to Case1, Case2, etc.
+                    let name = inline_schema
+                        .schema_data
+                        .title
+                        .as_ref()
+                        .map(|t| t.to_pascal_case())
+                        .unwrap_or_else(|| {
+                            let name = format!("Case{}", fallback_index);
+                            fallback_index += 1;
+                            name
+                        });
+
+                    let ty = self.schema_kind_to_type(&inline_schema.schema_kind).ok();
+                    (name, ty)
+                }
+            };
+
+            cases.push(VariantCase {
+                name: case_name,
+                payload,
+            });
+        }
+
+        cases
     }
 
     fn schema_kind_to_type(&self, kind: &SchemaKind) -> Result<RsType> {

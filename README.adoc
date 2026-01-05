@@ -113,21 +113,21 @@ type userRole = [
 
 [source,rescript]
 ----
-module S = RescriptSchema.S
+module S = RescriptSchema
 
-let userSchema = S.object(s => {
+let userSchema: S.t<user> = S.object(s => ({
   id: s.field("id", S.string),
   fullName: s.field("full_name", S.string),
   email: s.field("email", S.string),
   role: s.fieldOr("role", S.option(userRoleSchema), None),
-})
+}: user))
 
-let parseUser = (json: JSON.t): result<user, S.error> => {
-  json->S.parseWith(userSchema)
+let parseUser = (json: Js.Json.t): user => {
+  S.parseJsonOrThrow(json, userSchema)
 }
 
-let serializeUser = (value: user): JSON.t => {
-  value->S.serializeWith(userSchema)->Result.getExn
+let serializeUser = (value: user): Js.Json.t => {
+  S.reverseConvertToJsonOrThrow(value, userSchema)
 }
 ----
 
@@ -193,9 +193,17 @@ Add to your `rescript.json`:
 {
   "bs-dependencies": [
     "@rescript/core",
-    "rescript-schema"
+    "rescript-schema",
+    "@glennsl/rescript-fetch"
   ]
 }
+----
+
+Install with npm:
+
+[source,bash]
+----
+npm install @rescript/core rescript-schema @glennsl/rescript-fetch
 ----
 
 == Roadmap
