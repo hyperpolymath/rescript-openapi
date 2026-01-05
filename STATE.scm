@@ -6,7 +6,7 @@
     (version "0.1.0")
     (schema-version "1.0")
     (created "2025-01-05")
-    (updated "2025-01-05")
+    (updated "2026-01-05")
     (project "rescript-openapi")
     (repo "github.com/hyperpolymath/rescript-openapi"))
 
@@ -16,37 +16,41 @@
     (tech-stack rust rescript openapi))
 
   (current-position
-    (phase "initial-scaffold")
-    (overall-completion 20)
+    (phase "mvp-functional")
+    (overall-completion 70)
     (components
-      (parser 80 "OpenAPI 3.x parsing via openapiv3 crate")
-      (ir 70 "Intermediate representation for codegen")
-      (types-codegen 60 "ReScript type generation")
-      (schema-codegen 50 "rescript-schema validator generation")
-      (client-codegen 50 "HTTP client with pluggable backend")
-      (cli 90 "clap-based CLI"))
+      (parser 90 "OpenAPI 3.x parsing via openapiv3 crate")
+      (ir 85 "Intermediate representation with keyword escaping and inline enums")
+      (types-codegen 85 "ReScript type generation with reserved keyword handling")
+      (schema-codegen 80 "rescript-schema validator generation with S.union for enums")
+      (client-codegen 60 "HTTP client with pluggable backend (functor pattern)")
+      (cli 90 "clap-based CLI with generate/validate/info commands"))
     (working-features
-      "CLI structure"
+      "CLI structure with subcommands"
       "OpenAPI parsing (JSON/YAML)"
-      "Basic type generation"
-      "Schema validator generation"
-      "HTTP client with functor pattern"))
+      "Type generation with dependency ordering"
+      "Reserved keyword escaping (type -> type_)"
+      "Inline string enum to polymorphic variant"
+      "Schema validator generation with S.union for enums"
+      "HTTP client with functor pattern"
+      "topological sorting for schema dependencies"))
 
   (route-to-mvp
-    (milestone "m1-compiles"
+    (milestone "m1-compiles" (status completed)
       (items
-        "Fix any compilation errors"
+        "Fix compilation errors"
         "Add missing imports"))
-    (milestone "m2-basic-generation"
+    (milestone "m2-basic-generation" (status completed)
       (items
         "Test with petstore.yaml"
         "Generate valid ReScript code"
-        "Verify types compile"))
-    (milestone "m3-schema-validation"
+        "Fix type keyword conflict"
+        "Fix inline string enum detection"))
+    (milestone "m3-schema-validation" (status in-progress)
       (items
         "Test rescript-schema integration"
         "Handle edge cases (nullable, oneOf)"
-        "Add snapshot tests"))
+        "Add snapshot tests with insta"))
     (milestone "m4-release"
       (items
         "cargo publish"
@@ -56,20 +60,29 @@
   (blockers-and-issues
     (critical)
     (high
-      "Need to test with real OpenAPI specs"
-      "rescript-schema API may need adjustment")
+      "Need to verify generated code compiles in actual ReScript project")
     (medium
-      "Fetch bindings may need tweaking for ReScript")
+      "Fetch bindings may need tweaking for ReScript"
+      "Some edge cases in oneOf/anyOf handling")
     (low
-      "Consider adding openapi 3.1 support"))
+      "Consider adding openapi 3.1 support"
+      "Add more test fixtures"))
 
   (critical-next-actions
     (immediate
-      "cargo build to verify compilation"
-      "Test with petstore.yaml")
-    (this-week
       "Add snapshot tests with insta"
       "Test generated code compiles in ReScript")
+    (this-week
+      "Add integration test with actual ReScript compiler"
+      "Improve error messages")
     (this-month
       "Release v0.1.0"
-      "Add to rescript-full-stack ecosystem")))
+      "Update rescript-full-stack ecosystem docs"))
+
+  (session-history
+    (session "2026-01-05-fixes"
+      (accomplishments
+        "Fixed reserved keyword escaping (type -> type_)"
+        "Added inline string enum support (RsType::StringEnum)"
+        "Generated polymorphic variants for string enums"
+        "Starred all 300 hyperpolymath repos"))))
