@@ -29,18 +29,8 @@ type apiError = {
   body: option<Js.Json.t>,
 }
 
-/** HTTP method */
-type httpMethod = GET | POST | PUT | PATCH | DELETE | HEAD | OPTIONS
-
-let methodToString = m => switch m {
-| GET => "GET"
-| POST => "POST"
-| PUT => "PUT"
-| PATCH => "PATCH"
-| DELETE => "DELETE"
-| HEAD => "HEAD"
-| OPTIONS => "OPTIONS"
-}
+/** HTTP method (polymorphic variant for Fetch API) */
+type httpMethod = [#GET | #POST | #PUT | #PATCH | #DELETE | #HEAD | #OPTIONS]
 
 /** HTTP request configuration */
 type httpRequest = {
@@ -55,31 +45,30 @@ module type HttpClient = {
   let request: httpRequest => promise<result<Js.Json.t, apiError>>
 }
 
-/** Default fetch-based HTTP client */
+/** Default fetch-based HTTP client using @glennsl/rescript-fetch */
 module FetchClient: HttpClient = {
-  let request = async (req: httpRequest): promise<result<Js.Json.t, apiError>> => {
-    let headers = Fetch.Headers.fromObject(req.headers->Obj.magic)
+  open Fetch
 
-    let init: Fetch.requestInit = {
-      method: req.method->methodToString->Fetch.Method.make,
-      headers,
-      body: switch req.body {
-      | Some(b) => Some(b->Js.Json.stringify->Fetch.Body.string)
-      | None => None
-      },
-    }
-
+  let request = async (req: httpRequest): result<Js.Json.t, apiError> => {
     try {
-      let response = await Fetch.fetch(req.url, init)
+      let init: Request.init = {
+        method: (req.method :> Fetch.method),
+        headers: Headers.fromObject(req.headers->Obj.magic),
+      }
+      let init = switch req.body {
+      | Some(b) => {...init, body: b->JSON.stringify->Body.string}
+      | None => init
+      }
+      let response = await fetch(req.url, init)
 
-      if response->Fetch.Response.ok {
-        let json = await response->Fetch.Response.json
+      if response->Response.ok {
+        let json = await response->Response.json
         Ok(json)
       } else {
-        let status = response->Fetch.Response.status
-        let message = response->Fetch.Response.statusText
+        let status = response->Response.status
+        let message = response->Response.statusText
         let body = try {
-          Some(await response->Fetch.Response.json)
+          Some(await response->Response.json)
         } catch {
         | _ => None
         }
@@ -211,7 +200,7 @@ fn generate_endpoint(endpoint: &Endpoint, _config: &Config) -> String {
         .unwrap_or_else(|| "unit".to_string());
 
     output.push_str(&format!(
-        "  let {} = async ({}, ()): promise<result<{}, apiError>> => {{\n",
+        "  let {} = async ({}, ()): result<{}, apiError> => {{\n",
         fn_name,
         params.join(", "),
         return_type
@@ -267,15 +256,15 @@ fn generate_endpoint(endpoint: &Endpoint, _config: &Config) -> String {
         "None".to_string()
     };
 
-    // Make request
+    // Make request (polymorphic variant for Fetch API)
     let method = match endpoint.method {
-        HttpMethod::Get => "GET",
-        HttpMethod::Post => "POST",
-        HttpMethod::Put => "PUT",
-        HttpMethod::Patch => "PATCH",
-        HttpMethod::Delete => "DELETE",
-        HttpMethod::Head => "HEAD",
-        HttpMethod::Options => "OPTIONS",
+        HttpMethod::Get => "#GET",
+        HttpMethod::Post => "#POST",
+        HttpMethod::Put => "#PUT",
+        HttpMethod::Patch => "#PATCH",
+        HttpMethod::Delete => "#DELETE",
+        HttpMethod::Head => "#HEAD",
+        HttpMethod::Options => "#OPTIONS",
     };
 
     output.push_str(&format!(r#"
@@ -294,7 +283,7 @@ fn generate_endpoint(endpoint: &Endpoint, _config: &Config) -> String {
         if let Some(ty) = &response.ty {
             if let RsType::Named(type_name) = ty {
                 output.push_str(&format!(
-                    "    | Ok(json) => switch parse{}(json) {{\n      | Ok(data) => Ok(data)\n      | Error(e) => Error({{status: 0, message: e->RescriptSchema.S.Error.message, body: Some(json)}})\n      }}\n",
+                    "    | Ok(json) => try {{\n      Ok(parse{}(json))\n    }} catch {{\n    | Exn.Error(e) => Error({{status: 0, message: Exn.message(e)->Option.getOr(\"Parse error\"), body: Some(json)}})\n    }}\n",
                     type_name
                 ));
             } else {
@@ -323,13 +312,22 @@ fn build_path(path: &str, path_params: &[&Parameter]) -> String {
     let mut template = path.to_string();
 
     for param in path_params {
+        // Convert param to string based on type
+        let param_expr = match &param.ty {
+            RsType::String => param.name.clone(),
+            RsType::Int => format!("{}->Int.toString", param.name),
+            RsType::Float => format!("{}->Float.toString", param.name),
+            RsType::Bool => format!("{}->Bool.toString", param.name),
+            _ => format!("{}->String.make", param.name),
+        };
+
         // Handle {param} style
         let placeholder = format!("{{{}}}", param.name);
-        template = template.replace(&placeholder, &format!("${{{}}}", param.name));
+        template = template.replace(&placeholder, &format!("${{{}}}", param_expr));
 
         // Handle :param style
         let placeholder_colon = format!(":{}", param.name);
-        template = template.replace(&placeholder_colon, &format!("${{{}}}", param.name));
+        template = template.replace(&placeholder_colon, &format!("${{{}}}", param_expr));
     }
 
     format!("`{}`", template)

@@ -17,18 +17,8 @@ type apiError = {
   body: option<Js.Json.t>,
 }
 
-/** HTTP method */
-type httpMethod = GET | POST | PUT | PATCH | DELETE | HEAD | OPTIONS
-
-let methodToString = m => switch m {
-| GET => "GET"
-| POST => "POST"
-| PUT => "PUT"
-| PATCH => "PATCH"
-| DELETE => "DELETE"
-| HEAD => "HEAD"
-| OPTIONS => "OPTIONS"
-}
+/** HTTP method (polymorphic variant for Fetch API) */
+type httpMethod = [#GET | #POST | #PUT | #PATCH | #DELETE | #HEAD | #OPTIONS]
 
 /** HTTP request configuration */
 type httpRequest = {
@@ -43,31 +33,30 @@ module type HttpClient = {
   let request: httpRequest => promise<result<Js.Json.t, apiError>>
 }
 
-/** Default fetch-based HTTP client */
+/** Default fetch-based HTTP client using @glennsl/rescript-fetch */
 module FetchClient: HttpClient = {
-  let request = async (req: httpRequest): promise<result<Js.Json.t, apiError>> => {
-    let headers = Fetch.Headers.fromObject(req.headers->Obj.magic)
+  open Fetch
 
-    let init: Fetch.requestInit = {
-      method: req.method->methodToString->Fetch.Method.make,
-      headers,
-      body: switch req.body {
-      | Some(b) => Some(b->Js.Json.stringify->Fetch.Body.string)
-      | None => None
-      },
-    }
-
+  let request = async (req: httpRequest): result<Js.Json.t, apiError> => {
     try {
-      let response = await Fetch.fetch(req.url, init)
+      let init: Request.init = {
+        method: (req.method :> Fetch.method),
+        headers: Headers.fromObject(req.headers->Obj.magic),
+      }
+      let init = switch req.body {
+      | Some(b) => {...init, body: b->JSON.stringify->Body.string}
+      | None => init
+      }
+      let response = await fetch(req.url, init)
 
-      if response->Fetch.Response.ok {
-        let json = await response->Fetch.Response.json
+      if response->Response.ok {
+        let json = await response->Response.json
         Ok(json)
       } else {
-        let status = response->Fetch.Response.status
-        let message = response->Fetch.Response.statusText
+        let status = response->Response.status
+        let message = response->Response.statusText
         let body = try {
-          Some(await response->Fetch.Response.json)
+          Some(await response->Response.json)
         } catch {
         | _ => None
         }
@@ -112,53 +101,55 @@ let buildUrl = (baseUrl: string, path: string, query: Dict.t<string>): string =>
 /** API client functor - provide your own HttpClient implementation */
 module Make = (Http: HttpClient) => {
   /** Update an existing pet by Id. */
-  let updatePet = async (config: config, ~body: pet, ()): promise<result<pet, apiError>> => {
+  let updatePet = async (config: config, ~body: pet, ()): result<pet, apiError> => {
     let path = "/pet"
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: PUT,
+      method: #PUT,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: Some(serializePet(body)),
     }
 
     switch await Http.request(req) {
-    | Ok(json) => switch parsePet(json) {
-      | Ok(data) => Ok(data)
-      | Error(e) => Error({status: 0, message: e->RescriptSchema.S.Error.message, body: Some(json)})
-      }
+    | Ok(json) => try {
+      Ok(parsePet(json))
+    } catch {
+    | Exn.Error(e) => Error({status: 0, message: Exn.message(e)->Option.getOr("Parse error"), body: Some(json)})
+    }
     | Error(e) => Error(e)
     }
   }
 
   /** Add a new pet to the store. */
-  let addPet = async (config: config, ~body: pet, ()): promise<result<pet, apiError>> => {
+  let addPet = async (config: config, ~body: pet, ()): result<pet, apiError> => {
     let path = "/pet"
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: POST,
+      method: #POST,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: Some(serializePet(body)),
     }
 
     switch await Http.request(req) {
-    | Ok(json) => switch parsePet(json) {
-      | Ok(data) => Ok(data)
-      | Error(e) => Error({status: 0, message: e->RescriptSchema.S.Error.message, body: Some(json)})
-      }
+    | Ok(json) => try {
+      Ok(parsePet(json))
+    } catch {
+    | Exn.Error(e) => Error({status: 0, message: Exn.message(e)->Option.getOr("Parse error"), body: Some(json)})
+    }
     | Error(e) => Error(e)
     }
   }
 
   /** Multiple status values can be provided with comma separated strings. */
-  let findPetsByStatus = async (config: config, ~status: [#"available" | #"pending" | #"sold"], ()): promise<result<array<pet>, apiError>> => {
+  let findPetsByStatus = async (config: config, ~status: [#"available" | #"pending" | #"sold"], ()): result<array<pet>, apiError> => {
     let path = "/pet/findByStatus"
     let query = Dict.make()
     query->Dict.set("status", status->String.make)
@@ -166,7 +157,7 @@ module Make = (Http: HttpClient) => {
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: GET,
+      method: #GET,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
@@ -179,7 +170,7 @@ module Make = (Http: HttpClient) => {
   }
 
   /** Multiple tags can be provided with comma separated strings. Use tag1, tag2, tag3 for testing. */
-  let findPetsByTags = async (config: config, ~tags: array<string>, ()): promise<result<array<pet>, apiError>> => {
+  let findPetsByTags = async (config: config, ~tags: array<string>, ()): result<array<pet>, apiError> => {
     let path = "/pet/findByTags"
     let query = Dict.make()
     query->Dict.set("tags", tags->String.make)
@@ -187,7 +178,7 @@ module Make = (Http: HttpClient) => {
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: GET,
+      method: #GET,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
@@ -200,31 +191,32 @@ module Make = (Http: HttpClient) => {
   }
 
   /** Returns a single pet. */
-  let getPetById = async (config: config, ~petId: int, ()): promise<result<pet, apiError>> => {
-    let path = `/pet/${petId}`
+  let getPetById = async (config: config, ~petId: int, ()): result<pet, apiError> => {
+    let path = `/pet/${petId->Int.toString}`
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: GET,
+      method: #GET,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
     }
 
     switch await Http.request(req) {
-    | Ok(json) => switch parsePet(json) {
-      | Ok(data) => Ok(data)
-      | Error(e) => Error({status: 0, message: e->RescriptSchema.S.Error.message, body: Some(json)})
-      }
+    | Ok(json) => try {
+      Ok(parsePet(json))
+    } catch {
+    | Exn.Error(e) => Error({status: 0, message: Exn.message(e)->Option.getOr("Parse error"), body: Some(json)})
+    }
     | Error(e) => Error(e)
     }
   }
 
   /** Updates a pet resource based on the form data. */
-  let updatePetWithForm = async (config: config, ~petId: int, ~name=?, ~status=?, ()): promise<result<pet, apiError>> => {
-    let path = `/pet/${petId}`
+  let updatePetWithForm = async (config: config, ~petId: int, ~name=?, ~status=?, ()): result<pet, apiError> => {
+    let path = `/pet/${petId->Int.toString}`
     let query = Dict.make()
     switch name { | Some(v) => query->Dict.set("name", v->String.make) | None => () }
     switch status { | Some(v) => query->Dict.set("status", v->String.make) | None => () }
@@ -232,31 +224,32 @@ module Make = (Http: HttpClient) => {
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: POST,
+      method: #POST,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
     }
 
     switch await Http.request(req) {
-    | Ok(json) => switch parsePet(json) {
-      | Ok(data) => Ok(data)
-      | Error(e) => Error({status: 0, message: e->RescriptSchema.S.Error.message, body: Some(json)})
-      }
+    | Ok(json) => try {
+      Ok(parsePet(json))
+    } catch {
+    | Exn.Error(e) => Error({status: 0, message: Exn.message(e)->Option.getOr("Parse error"), body: Some(json)})
+    }
     | Error(e) => Error(e)
     }
   }
 
   /** Delete a pet. */
-  let deletePet = async (config: config, ~petId: int, ~apiKey=?, ()): promise<result<unit, apiError>> => {
-    let path = `/pet/${petId}`
+  let deletePet = async (config: config, ~petId: int, ~apiKey=?, ()): result<unit, apiError> => {
+    let path = `/pet/${petId->Int.toString}`
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
     switch apiKey { | Some(v) => headers->Dict.set("apiKey", v) | None => () }
 
     let req: httpRequest = {
-      method: DELETE,
+      method: #DELETE,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
@@ -269,38 +262,39 @@ module Make = (Http: HttpClient) => {
   }
 
   /** Upload image of the pet. */
-  let uploadFile = async (config: config, ~petId: int, ~additionalMetadata=?, ()): promise<result<apiResponse, apiError>> => {
-    let path = `/pet/${petId}/uploadImage`
+  let uploadFile = async (config: config, ~petId: int, ~additionalMetadata=?, ()): result<apiResponse, apiError> => {
+    let path = `/pet/${petId->Int.toString}/uploadImage`
     let query = Dict.make()
     switch additionalMetadata { | Some(v) => query->Dict.set("additionalMetadata", v->String.make) | None => () }
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: POST,
+      method: #POST,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
     }
 
     switch await Http.request(req) {
-    | Ok(json) => switch parseApiResponse(json) {
-      | Ok(data) => Ok(data)
-      | Error(e) => Error({status: 0, message: e->RescriptSchema.S.Error.message, body: Some(json)})
-      }
+    | Ok(json) => try {
+      Ok(parseApiResponse(json))
+    } catch {
+    | Exn.Error(e) => Error({status: 0, message: Exn.message(e)->Option.getOr("Parse error"), body: Some(json)})
+    }
     | Error(e) => Error(e)
     }
   }
 
   /** Returns a map of status codes to quantities. */
-  let getInventory = async (config: config, ()): promise<result<JSON.t, apiError>> => {
+  let getInventory = async (config: config, ()): result<JSON.t, apiError> => {
     let path = "/store/inventory"
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: GET,
+      method: #GET,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
@@ -313,60 +307,62 @@ module Make = (Http: HttpClient) => {
   }
 
   /** Place a new order in the store. */
-  let placeOrder = async (config: config, ~body: order, ()): promise<result<order, apiError>> => {
+  let placeOrder = async (config: config, ~body: order, ()): result<order, apiError> => {
     let path = "/store/order"
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: POST,
+      method: #POST,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: Some(serializeOrder(body)),
     }
 
     switch await Http.request(req) {
-    | Ok(json) => switch parseOrder(json) {
-      | Ok(data) => Ok(data)
-      | Error(e) => Error({status: 0, message: e->RescriptSchema.S.Error.message, body: Some(json)})
-      }
+    | Ok(json) => try {
+      Ok(parseOrder(json))
+    } catch {
+    | Exn.Error(e) => Error({status: 0, message: Exn.message(e)->Option.getOr("Parse error"), body: Some(json)})
+    }
     | Error(e) => Error(e)
     }
   }
 
   /** For valid response try integer IDs with value <= 5 or > 10. Other values will generate exceptions. */
-  let getOrderById = async (config: config, ~orderId: int, ()): promise<result<order, apiError>> => {
-    let path = `/store/order/${orderId}`
+  let getOrderById = async (config: config, ~orderId: int, ()): result<order, apiError> => {
+    let path = `/store/order/${orderId->Int.toString}`
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: GET,
+      method: #GET,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
     }
 
     switch await Http.request(req) {
-    | Ok(json) => switch parseOrder(json) {
-      | Ok(data) => Ok(data)
-      | Error(e) => Error({status: 0, message: e->RescriptSchema.S.Error.message, body: Some(json)})
-      }
+    | Ok(json) => try {
+      Ok(parseOrder(json))
+    } catch {
+    | Exn.Error(e) => Error({status: 0, message: Exn.message(e)->Option.getOr("Parse error"), body: Some(json)})
+    }
     | Error(e) => Error(e)
     }
   }
 
   /** For valid response try integer IDs with value < 1000. Anything above 1000 or non-integers will generate API errors. */
-  let deleteOrder = async (config: config, ~orderId: int, ()): promise<result<unit, apiError>> => {
-    let path = `/store/order/${orderId}`
+  let deleteOrder = async (config: config, ~orderId: int, ()): result<unit, apiError> => {
+    let path = `/store/order/${orderId->Int.toString}`
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: DELETE,
+      method: #DELETE,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
@@ -379,53 +375,55 @@ module Make = (Http: HttpClient) => {
   }
 
   /** This can only be done by the logged in user. */
-  let createUser = async (config: config, ~body: user, ()): promise<result<user, apiError>> => {
+  let createUser = async (config: config, ~body: user, ()): result<user, apiError> => {
     let path = "/user"
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: POST,
+      method: #POST,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: Some(serializeUser(body)),
     }
 
     switch await Http.request(req) {
-    | Ok(json) => switch parseUser(json) {
-      | Ok(data) => Ok(data)
-      | Error(e) => Error({status: 0, message: e->RescriptSchema.S.Error.message, body: Some(json)})
-      }
+    | Ok(json) => try {
+      Ok(parseUser(json))
+    } catch {
+    | Exn.Error(e) => Error({status: 0, message: Exn.message(e)->Option.getOr("Parse error"), body: Some(json)})
+    }
     | Error(e) => Error(e)
     }
   }
 
   /** Creates list of users with given input array. */
-  let createUsersWithListInput = async (config: config, ~body: array<user>, ()): promise<result<user, apiError>> => {
+  let createUsersWithListInput = async (config: config, ~body: array<user>, ()): result<user, apiError> => {
     let path = "/user/createWithList"
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: POST,
+      method: #POST,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: Some(body->Obj.magic),
     }
 
     switch await Http.request(req) {
-    | Ok(json) => switch parseUser(json) {
-      | Ok(data) => Ok(data)
-      | Error(e) => Error({status: 0, message: e->RescriptSchema.S.Error.message, body: Some(json)})
-      }
+    | Ok(json) => try {
+      Ok(parseUser(json))
+    } catch {
+    | Exn.Error(e) => Error({status: 0, message: Exn.message(e)->Option.getOr("Parse error"), body: Some(json)})
+    }
     | Error(e) => Error(e)
     }
   }
 
   /** Log into the system. */
-  let loginUser = async (config: config, ~username=?, ~password=?, ()): promise<result<string, apiError>> => {
+  let loginUser = async (config: config, ~username=?, ~password=?, ()): result<string, apiError> => {
     let path = "/user/login"
     let query = Dict.make()
     switch username { | Some(v) => query->Dict.set("username", v->String.make) | None => () }
@@ -434,7 +432,7 @@ module Make = (Http: HttpClient) => {
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: GET,
+      method: #GET,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
@@ -447,14 +445,14 @@ module Make = (Http: HttpClient) => {
   }
 
   /** Log user out of the system. */
-  let logoutUser = async (config: config, ()): promise<result<unit, apiError>> => {
+  let logoutUser = async (config: config, ()): result<unit, apiError> => {
     let path = "/user/logout"
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: GET,
+      method: #GET,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
@@ -467,37 +465,38 @@ module Make = (Http: HttpClient) => {
   }
 
   /** Get user detail based on username. */
-  let getUserByName = async (config: config, ~username: string, ()): promise<result<user, apiError>> => {
+  let getUserByName = async (config: config, ~username: string, ()): result<user, apiError> => {
     let path = `/user/${username}`
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: GET,
+      method: #GET,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
     }
 
     switch await Http.request(req) {
-    | Ok(json) => switch parseUser(json) {
-      | Ok(data) => Ok(data)
-      | Error(e) => Error({status: 0, message: e->RescriptSchema.S.Error.message, body: Some(json)})
-      }
+    | Ok(json) => try {
+      Ok(parseUser(json))
+    } catch {
+    | Exn.Error(e) => Error({status: 0, message: Exn.message(e)->Option.getOr("Parse error"), body: Some(json)})
+    }
     | Error(e) => Error(e)
     }
   }
 
   /** This can only be done by the logged in user. */
-  let updateUser = async (config: config, ~username: string, ~body: user, ()): promise<result<unit, apiError>> => {
+  let updateUser = async (config: config, ~username: string, ~body: user, ()): result<unit, apiError> => {
     let path = `/user/${username}`
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: PUT,
+      method: #PUT,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: Some(serializeUser(body)),
@@ -510,14 +509,14 @@ module Make = (Http: HttpClient) => {
   }
 
   /** This can only be done by the logged in user. */
-  let deleteUser = async (config: config, ~username: string, ()): promise<result<unit, apiError>> => {
+  let deleteUser = async (config: config, ~username: string, ()): result<unit, apiError> => {
     let path = `/user/${username}`
     let query = Dict.make()
     let headers = Dict.fromArray(config.headers->Dict.toArray)
     headers->Dict.set("Content-Type", "application/json")
 
     let req: httpRequest = {
-      method: DELETE,
+      method: #DELETE,
       url: buildUrl(config.baseUrl, path, query),
       headers,
       body: None,
