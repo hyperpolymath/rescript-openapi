@@ -5,9 +5,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-mod codegen;
-mod ir;
-mod parser;
+use rescript_openapi::{codegen, ir, parser};
 
 #[derive(Parser)]
 #[command(name = "rescript-openapi")]

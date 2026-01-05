@@ -8,9 +8,9 @@
 //! - rescript-schema validators
 //! - HTTP client functions using fetch
 
-mod client;
-mod schema;
-mod types;
+pub mod client;
+pub mod schema;
+pub mod types;
 
 use crate::ir::ApiSpec;
 use anyhow::Result;

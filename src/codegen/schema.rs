@@ -123,11 +123,9 @@ pub fn topological_sort(types: &[TypeDef]) -> Vec<&TypeDef> {
 
     // Build reverse graph: for each type, which types depend on it
     for (name, deps) in &deps_map {
-        for dep in deps {
-            // dep is depended upon by name, so dep must come first
-            // This means 'name' has an incoming edge from 'dep'
-            *in_degree.get_mut(name).unwrap() += 1;
-        }
+        // Each dependency means 'name' has an incoming edge
+        // (dep must come before name in the sorted order)
+        *in_degree.get_mut(name).unwrap() += deps.len();
     }
 
     // Start with types that have no dependencies (sorted for deterministic order)
