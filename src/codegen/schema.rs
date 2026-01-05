@@ -79,7 +79,7 @@ fn collect_type_deps(ty: &RsType, deps: &mut HashSet<String>) {
 }
 
 /// Topologically sort types so dependencies come before dependents
-fn topological_sort(types: &[TypeDef]) -> Vec<&TypeDef> {
+pub fn topological_sort(types: &[TypeDef]) -> Vec<&TypeDef> {
     // Build name -> TypeDef map
     let type_map: HashMap<String, &TypeDef> = types
         .iter()
@@ -130,13 +130,14 @@ fn topological_sort(types: &[TypeDef]) -> Vec<&TypeDef> {
         }
     }
 
-    // Start with types that have no dependencies
-    let mut queue: VecDeque<String> = VecDeque::new();
-    for (name, &degree) in &in_degree {
-        if degree == 0 {
-            queue.push_back(name.clone());
-        }
-    }
+    // Start with types that have no dependencies (sorted for deterministic order)
+    let mut zero_degree: Vec<String> = in_degree
+        .iter()
+        .filter(|(_, &degree)| degree == 0)
+        .map(|(name, _)| name.clone())
+        .collect();
+    zero_degree.sort();
+    let mut queue: VecDeque<String> = zero_degree.into_iter().collect();
 
     let mut sorted: Vec<&TypeDef> = Vec::new();
 
@@ -146,14 +147,20 @@ fn topological_sort(types: &[TypeDef]) -> Vec<&TypeDef> {
         }
 
         // For each type that depends on this one, decrease its in-degree
+        // Collect newly ready types and sort them for deterministic order
+        let mut newly_ready: Vec<String> = Vec::new();
         for (other_name, other_deps) in &deps_map {
             if other_deps.contains(&name) {
                 let degree = in_degree.get_mut(other_name).unwrap();
                 *degree -= 1;
                 if *degree == 0 {
-                    queue.push_back(other_name.clone());
+                    newly_ready.push(other_name.clone());
                 }
             }
+        }
+        newly_ready.sort();
+        for ready_name in newly_ready {
+            queue.push_back(ready_name);
         }
     }
 
@@ -192,31 +199,33 @@ fn generate_schema(type_def: &TypeDef) -> String {
                 output.push_str(&format!("/** Schema for {} */\n", doc));
             }
 
-            output.push_str(&format!("let {} = S.object(s => {{\n", schema_name));
+            let type_name = name.to_lower_camel_case();
+            output.push_str(&format!("let {}: S.t<{}> = S.object(s => ({{\n", schema_name, type_name));
 
             for field in fields {
                 output.push_str(&generate_field_schema(field));
             }
 
-            output.push_str("})\n");
+            output.push_str(&format!("}}: {}))\n", type_name));
 
-            // Add parse and serialize helpers
+            // Add parse helper using parseJsonOrThrow
             output.push('\n');
             output.push_str(&format!(
-                "let parse{} = (json: JSON.t): result<{}, S.error> => {{\n",
+                "let parse{} = (json: Js.Json.t): {} => {{\n",
                 name,
                 name.to_lower_camel_case()
             ));
-            output.push_str(&format!("  json->S.parseWith({})\n", schema_name));
+            output.push_str(&format!("  S.parseJsonOrThrow(json, {})\n", schema_name));
             output.push_str("}\n");
 
+            // Add serialize helper using reverseConvertToJsonOrThrow
             output.push('\n');
             output.push_str(&format!(
-                "let serialize{} = (value: {}): JSON.t => {{\n",
+                "let serialize{} = (value: {}): Js.Json.t => {{\n",
                 name,
                 name.to_lower_camel_case()
             ));
-            output.push_str(&format!("  value->S.serializeWith({})->Result.getExn\n", schema_name));
+            output.push_str(&format!("  S.reverseConvertToJsonOrThrow(value, {})\n", schema_name));
             output.push_str("}\n");
         }
 
