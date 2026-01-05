@@ -11,6 +11,25 @@ use heck::{ToLowerCamelCase, ToPascalCase};
 use openapiv3::{OpenAPI, ReferenceOr, Schema, SchemaKind, Type};
 use std::collections::BTreeMap;
 
+/// ReScript reserved keywords that cannot be used as field names
+const RESERVED_KEYWORDS: &[&str] = &[
+    "type", "let", "module", "open", "include", "external", "if", "else",
+    "switch", "when", "rec", "and", "as", "exception", "try", "catch",
+    "while", "for", "in", "to", "downto", "assert", "lazy", "private",
+    "mutable", "constraint", "of", "true", "false", "or", "not", "mod",
+    "land", "lor", "lxor", "lsl", "lsr", "asr", "await", "async",
+];
+
+/// Sanitize a field name to avoid ReScript reserved keywords
+fn sanitize_field_name(name: &str) -> String {
+    let lower_name = name.to_lower_camel_case();
+    if RESERVED_KEYWORDS.contains(&lower_name.as_str()) {
+        format!("{}_", lower_name)
+    } else {
+        lower_name
+    }
+}
+
 /// Root IR node representing the entire API
 #[derive(Debug)]
 pub struct ApiSpec {
@@ -85,6 +104,8 @@ pub enum RsType {
     Json,
     Named(String),
     Tuple(Vec<RsType>),
+    /// Inline string enum (polymorphic variant)
+    StringEnum(Vec<String>),
 }
 
 impl RsType {
@@ -104,6 +125,14 @@ impl RsType {
                 let inner: Vec<_> = types.iter().map(|t| t.to_rescript()).collect();
                 format!("({})", inner.join(", "))
             }
+            RsType::StringEnum(values) => {
+                // Generate inline polymorphic variant
+                let cases: Vec<_> = values
+                    .iter()
+                    .map(|v| format!("#\"{}\"", v))
+                    .collect();
+                format!("[{}]", cases.join(" | "))
+            }
         }
     }
 
@@ -122,6 +151,14 @@ impl RsType {
             RsType::Tuple(types) => {
                 let schemas: Vec<_> = types.iter().map(|t| t.to_schema()).collect();
                 format!("S.tuple(s => ({}))", schemas.join(", "))
+            }
+            RsType::StringEnum(values) => {
+                // Generate S.union with S.literal for each value
+                let literals: Vec<_> = values
+                    .iter()
+                    .map(|v| format!("S.literal(#\"{}\")", v))
+                    .collect();
+                format!("S.union([{}])", literals.join(", "))
             }
         }
     }
@@ -271,7 +308,7 @@ impl<'a> Lowerer<'a> {
                     };
 
                     fields.push(Field {
-                        name: prop_name.to_lower_camel_case(),
+                        name: sanitize_field_name(prop_name),
                         original_name: prop_name.clone(),
                         ty: field_ty,
                         optional: !required,
@@ -371,7 +408,19 @@ impl<'a> Lowerer<'a> {
 
     fn schema_kind_to_type(&self, kind: &SchemaKind) -> Result<RsType> {
         match kind {
-            SchemaKind::Type(Type::String(_)) => Ok(RsType::String),
+            SchemaKind::Type(Type::String(string_type)) => {
+                // Check for inline string enum
+                if !string_type.enumeration.is_empty() {
+                    let values: Vec<String> = string_type
+                        .enumeration
+                        .iter()
+                        .filter_map(|v| v.clone())
+                        .collect();
+                    Ok(RsType::StringEnum(values))
+                } else {
+                    Ok(RsType::String)
+                }
+            }
             SchemaKind::Type(Type::Integer(_)) => Ok(RsType::Int),
             SchemaKind::Type(Type::Number(_)) => Ok(RsType::Float),
             SchemaKind::Type(Type::Boolean(_)) => Ok(RsType::Bool),
